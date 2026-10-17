@@ -7,6 +7,7 @@ namespace Tigger\Http;
 use InvalidArgumentException;
 use LogicException;
 use Stringable;
+use Tigger\View\View;
 
 /**
  * An outgoing HTTP response (the `$res` of your handlers).
@@ -30,6 +31,11 @@ final class Response
     private bool $finished = false;
 
     private bool $flushed = false;
+
+    private ?View $views = null;
+
+    /** @var array<string,mixed> */
+    private array $locals = [];
 
     /**
      * Sets the HTTP status code.
@@ -133,6 +139,80 @@ final class Response
         );
 
         return $this->finish($encoded, 'application/json; charset=utf-8', $status);
+    }
+
+    /**
+     * Renders a template from the views directory and sends it as HTML.
+     *
+     * Variables set with {@see Response::local()} (CSRF token, CSP nonce...) are merged in;
+     * `$data` wins on conflicts. Configure the directory once with `$app->views()`.
+     *
+     * @param string              $template Template name, e.g. "home" or "errors/404".
+     * @param array<string,mixed> $data     Variables for the template.
+     * @param int|null            $status   Optional status code.
+     * @param string|null         $layout   Layout override for this render.
+     *
+     * @return static
+     *
+     * @throws LogicException           If no views directory is configured or the response was already finished.
+     * @throws InvalidArgumentException If the template name is invalid or the file does not exist.
+     */
+    public function render(string $template, array $data = [], ?int $status = null, ?string $layout = null): static
+    {
+        if ($this->views === null) {
+            throw new LogicException('No views directory configured. Call $app->views(__DIR__ . \'/views\') first.');
+        }
+
+        $this->assertWritable();
+
+        $html = $this->views->render($template, array_replace($this->locals, $data), $layout);
+
+        return $this->finish($html, 'text/html; charset=utf-8', $status);
+    }
+
+    /**
+     * Attaches the view engine (called by the application).
+     *
+     * @param View|null $views View engine.
+     *
+     * @return static
+     */
+    public function setViews(?View $views): static
+    {
+        $this->views = $views;
+
+        return $this;
+    }
+
+    /**
+     * Sets a variable that every `render()` of this response receives (used by middleware).
+     *
+     * @param string $key   Variable name.
+     * @param mixed  $value Variable value.
+     *
+     * @return static
+     */
+    public function local(string $key, mixed $value): static
+    {
+        $this->locals[$key] = $value;
+
+        return $this;
+    }
+
+    /**
+     * @return array<string,mixed> Variables set with {@see Response::local()}.
+     */
+    public function locals(): array
+    {
+        return $this->locals;
+    }
+
+    /**
+     * @return list<string> Raw `Set-Cookie` header values queued on this response.
+     */
+    public function getCookies(): array
+    {
+        return $this->cookies;
     }
 
     /**

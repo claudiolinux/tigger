@@ -34,7 +34,7 @@ final class Route
     /**
      * @param list<string> $methods Upper-case HTTP methods this route answers.
      * @param string       $path    Path pattern, e.g. "/users/:id".
-     * @param callable     $handler Handler `function (\Request $req, Response $res): mixed`.
+     * @param callable     $handler Handler `function (Request $req, Response $res): mixed`.
      */
     public function __construct(
         private readonly array $methods,
@@ -47,7 +47,7 @@ final class Route
     /**
      * Attaches route-level middleware, run before the handler.
      *
-     * @param callable ...$middleware Middleware `function (\Request $req, Response $res, callable $next): void`.
+     * @param callable ...$middleware Middleware `function (Request $req, Response $res, callable $next): void`.
      *
      * @return static
      */

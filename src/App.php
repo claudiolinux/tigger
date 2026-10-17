@@ -7,6 +7,7 @@ namespace Tigger;
 use Closure;
 use InvalidArgumentException;
 use JsonSerializable;
+use LogicException;
 use Throwable;
 use Tigger\Exceptions\HttpException;
 use Tigger\Http\Request;
@@ -14,6 +15,7 @@ use Tigger\Http\Response;
 use Tigger\Routing\Path;
 use Tigger\Routing\Route;
 use Tigger\Routing\Router;
+use Tigger\View\View;
 
 /**
  * The Tigger application: your `server.js`.
@@ -26,7 +28,7 @@ use Tigger\Routing\Router;
  */
 final class App
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '1.0.0';
 
     private Router $router;
 
@@ -36,6 +38,14 @@ final class App
     private ?Closure $errorHandler = null;
 
     private string $basePath = '';
+
+    private ?View $views = null;
+
+    /** @var array<int,string> */
+    private array $errorPages = [];
+
+    /** @var list<Closure> */
+    private array $terminators = [];
 
     /**
      * @param bool $debug When true, error responses include exception details.
@@ -178,6 +188,59 @@ final class App
     }
 
     /**
+     * Configures the views directory used by `$res->render()` and custom error pages.
+     *
+     * @param string      $directory Views directory (must exist), e.g. `__DIR__ . '/views'`.
+     *                               Keep it outside the web root, or block direct access with .htaccess.
+     * @param string|null $layout    Default layout applied to every render (see `$this->layout()` in views).
+     * @param string      $extension Template file extension.
+     *
+     * @return View The engine; use `->share('key', $value)` to expose variables to every template.
+     *
+     * @throws InvalidArgumentException If the directory does not exist.
+     */
+    public function views(string $directory, ?string $layout = null, string $extension = '.php'): View
+    {
+        return $this->views = new View($directory, $extension, $layout);
+    }
+
+    /**
+     * Uses a view as the response page for an HTTP error status (e.g. 404, 403, 500).
+     *
+     * The template receives `$status`, `$message`, `$title`, `$debug` (bool) and `$exception`
+     * (only when debug is on, otherwise null). Statuses >= 500 fall back to the 500 page.
+     * JSON clients still get the JSON error body.
+     *
+     * @param int    $status   HTTP status code.
+     * @param string $template Template name, e.g. "errors/404".
+     *
+     * @return static
+     */
+    public function errorPage(int $status, string $template): static
+    {
+        $this->errorPages[$status] = $template;
+
+        return $this;
+    }
+
+    /**
+     * Registers work to run after the response has been sent (sending webhooks, emails, logging).
+     *
+     * With PHP-FPM the connection is closed first, so the visitor never waits for it.
+     * Callbacks receive `(Request $req, Response $res)`; exceptions are logged, never shown.
+     *
+     * @param callable $callback Callback to run after the response.
+     *
+     * @return static
+     */
+    public function terminating(callable $callback): static
+    {
+        $this->terminators[] = $callback(...);
+
+        return $this;
+    }
+
+    /**
      * Installs a custom error handler (also receives 404/405 {@see HttpException}s).
      *
      * @param callable $handler `function (Throwable $e, Request $req, Response $res): void`.
@@ -223,7 +286,7 @@ final class App
                 $request = Request::fromGlobals();
             } catch (HttpException $e) {
                 $request = new Request('GET', '/');
-                $response = new Response();
+                $response = $this->newResponse();
                 $this->handleError($e, $request, $response);
                 $response->flush();
 
@@ -231,7 +294,9 @@ final class App
             }
         }
 
-        $this->handle($request)->flush($request->method() === 'HEAD');
+        $response = $this->handle($request);
+        $response->flush($request->method() === 'HEAD');
+        $this->terminate($request, $response);
     }
 
     /**
@@ -245,7 +310,7 @@ final class App
     public function handle(Request $request): Response
     {
         $this->basePath = $request->basePath();
-        $response = new Response();
+        $response = $this->newResponse();
 
         try {
             $stack = [];
@@ -255,12 +320,50 @@ final class App
                 }
             }
 
-            Pipeline::run($stack, $request, $response, fn() => $this->dispatch($request, $response));
+            Pipeline::run($stack, $request, $response, fn () => $this->dispatch($request, $response));
         } catch (Throwable $e) {
             $this->handleError($e, $request, $response);
         }
 
         return $response;
+    }
+
+    /**
+     * Creates a response wired to the view engine.
+     *
+     * @return Response
+     */
+    private function newResponse(): Response
+    {
+        return (new Response())->setViews($this->views);
+    }
+
+    /**
+     * Runs the callbacks registered with {@see App::terminating()}.
+     *
+     * @param Request  $request  Handled request.
+     * @param Response $response Sent response.
+     *
+     * @return void
+     */
+    private function terminate(Request $request, Response $response): void
+    {
+        if ($this->terminators === []) {
+            return;
+        }
+
+        ignore_user_abort(true);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        }
+
+        foreach ($this->terminators as $callback) {
+            try {
+                $callback($request, $response);
+            } catch (Throwable $e) {
+                error_log('[Tigger] terminating callback failed: ' . $e::class . ': ' . $e->getMessage());
+            }
+        }
     }
 
     /**
@@ -396,6 +499,24 @@ final class App
             $response->json(['error' => $error]);
 
             return;
+        }
+
+        $page = $this->errorPages[$status] ?? ($status >= 500 ? ($this->errorPages[500] ?? null) : null);
+        if ($page !== null && $this->views !== null) {
+            try {
+                $response->render($page, [
+                    'status' => $status,
+                    'message' => $message,
+                    'title' => $status . ' ' . HttpException::phrase($status),
+                    'debug' => $this->debug,
+                    'exception' => $this->debug ? $e : null,
+                ]);
+
+                return;
+            } catch (Throwable $inner) {
+                error_log('[Tigger] Error page failed: ' . $inner->getMessage());
+                $response->resetBody();
+            }
         }
 
         $safe = htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');

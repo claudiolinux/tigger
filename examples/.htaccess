@@ -7,11 +7,14 @@ DirectoryIndex index.php
     # Pass the Authorization header through (needed on many shared hosts)
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-    # Never serve source, dependencies or project metadata
-    RewriteRule ^(vendor|src|tests)(/|$) - [F,L]
-    RewriteRule ^(composer\.(json|lock)|README\.md|\.gitignore|\.htaccess)$ - [F,L]
+    # Never serve source, dependencies, templates or project metadata
+    RewriteRule ^(vendor|src|tests|storage|views)(/|$) - [F,L]
+    RewriteRule ^(composer\.(json|lock)|README\.md|CHANGELOG\.md|\.gitignore|\.env|\.htaccess)$ - [F,L]
 
-    # Real files (e.g. /public/app.css) are served directly; everything else goes to index.php
+    # Templates kept inside public/ must not be executable directly (/public/home.php)
+    RewriteRule ^public/.*\.php$ - [F,L]
+
+    # Real files (e.g. /public/css/style.css) are served directly; everything else goes to index.php
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^ index.php [L]

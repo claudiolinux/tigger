@@ -3,7 +3,13 @@
     "description": "A tiny, Express.js-inspired micro-framework for PHP 8.3+ with zero dependencies.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["framework", "router", "middleware", "express", "micro-framework"],
+    "keywords": [
+        "framework",
+        "router",
+        "middleware",
+        "express",
+        "micro-framework"
+    ],
     "require": {
         "php": ">=8.3"
     },
@@ -15,5 +21,18 @@
     "config": {
         "sort-packages": true
     },
-    "minimum-stability": "stable"
+    "minimum-stability": "stable",
+    "suggest": {
+        "ext-curl": "Required to send outbound webhooks (Tigger\\Webhooks\\Dispatcher)."
+    },
+    "scripts": {
+        "test": [
+            "php tests/smoke.php",
+            "php tests/features.php"
+        ]
+    },
+    "support": {
+        "issues": "https://github.com/claudiolinux/tigger/issues",
+        "source": "https://github.com/claudiolinux/tigger"
+    }
 }

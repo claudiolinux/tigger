@@ -33,6 +33,7 @@ final class Request
      * @param string               $ip       Client IP (REMOTE_ADDR; proxy headers are never trusted).
      * @param bool                 $secure   Whether the request came over HTTPS.
      * @param string               $basePath Sub-directory the app lives in ("" when at the web root).
+     * @param string               $rawBody  Raw request body, exactly as received (needed to verify webhook signatures).
      */
     public function __construct(
         private readonly string $method,
@@ -45,6 +46,7 @@ final class Request
         private readonly string $ip = '',
         private readonly bool $secure = false,
         private readonly string $basePath = '',
+        private readonly string $rawBody = '',
     ) {
         $this->headers = array_change_key_case($this->headers, CASE_LOWER);
     }
@@ -102,6 +104,14 @@ final class Request
             $headers['authorization'] = (string) $server['REDIRECT_HTTP_AUTHORIZATION'];
         }
 
+        $raw = '';
+        if ($method !== 'GET' && $method !== 'HEAD') {
+            if ((int) ($headers['content-length'] ?? 0) > $maxBodyBytes) {
+                throw new HttpException(413);
+            }
+            $raw = self::readInput($maxBodyBytes);
+        }
+
         $https = strtolower((string) ($server['HTTPS'] ?? ''));
         $secure = ($https !== '' && $https !== 'off') || (int) ($server['SERVER_PORT'] ?? 0) === 443;
 
@@ -109,41 +119,37 @@ final class Request
             $method,
             Path::normalize($decoded),
             $_GET,
-            self::parseBody($method, $headers, $maxBodyBytes),
+            self::parseBody($method, $headers, $raw),
             $headers,
             $_COOKIE,
             $_FILES,
             (string) ($server['REMOTE_ADDR'] ?? ''),
             $secure,
             $base,
+            $raw,
         );
     }
 
     /**
      * Parses the request body according to its content type.
      *
-     * @param string               $method       HTTP method.
-     * @param array<string,string> $headers      Lower-cased headers.
-     * @param int                  $maxBodyBytes Size limit.
+     * @param string               $method  HTTP method.
+     * @param array<string,string> $headers Lower-cased headers.
+     * @param string               $raw     Raw request body.
      *
      * @return array<string,mixed>
      *
-     * @throws HttpException On invalid JSON or an oversized body.
+     * @throws HttpException On invalid JSON.
      */
-    private static function parseBody(string $method, array $headers, int $maxBodyBytes): array
+    private static function parseBody(string $method, array $headers, string $raw): array
     {
         if ($method === 'GET' || $method === 'HEAD') {
             return [];
         }
 
-        if ((int) ($headers['content-length'] ?? 0) > $maxBodyBytes) {
-            throw new HttpException(413);
-        }
-
         $type = strtolower($headers['content-type'] ?? '');
 
         if (str_contains($type, 'application/json')) {
-            $raw = self::readInput($maxBodyBytes);
             if ($raw === '') {
                 return [];
             }
@@ -167,7 +173,7 @@ final class Request
             if ($method === 'POST') {
                 return $_POST;
             }
-            parse_str(self::readInput($maxBodyBytes), $parsed);
+            parse_str($raw, $parsed);
 
             return $parsed;
         }
@@ -219,6 +225,18 @@ final class Request
     public function basePath(): string
     {
         return $this->basePath;
+    }
+
+    /**
+     * Returns the raw request body exactly as received.
+     *
+     * Signature checks (Stripe, Buy Me a Coffee...) must use these bytes, never a re-encoded body.
+     *
+     * @return string
+     */
+    public function rawBody(): string
+    {
+        return $this->rawBody;
     }
 
     /**
